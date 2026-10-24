@@ -247,9 +247,12 @@ final class Init
                 $added[] = $package;
             }
         }
-        if ($plan->namespace === 'Specs\\' && !isset($composer['autoload-dev']['psr-4']['Specs\\'])) {
-            $composer['autoload-dev']['psr-4']['Specs\\'] = 'tests/';
-            $added[] = 'autoload-dev Specs\\';
+        foreach (['Internal' => 'tests/internal/', 'Steps' => 'tests/steps/'] as $leaf => $dir) {
+            $prefix = "{$plan->namespace}{$leaf}\\";
+            if (!isset($composer['autoload-dev']['psr-4'][$prefix])) {
+                $composer['autoload-dev']['psr-4'][$prefix] = $dir;
+                $added[] = "autoload-dev {$prefix}";
+            }
         }
         if ($plan->checkout !== null) {
             $url = "{$plan->checkout}/packages/*";
