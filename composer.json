@@ -1,0 +1,31 @@
+{
+    "name": "specrig/specrig",
+    "description": "The core of specrig for PHP: the harness, the stand-ins, the contract check, the records, the Behat binding and the specrig command",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": "^8.2",
+        "ext-curl": "*",
+        "ext-json": "*",
+        "ext-mbstring": "*",
+        "behat/behat": "^3.34 || ^4.0",
+        "nikic/php-parser": "^5.0",
+        "opis/json-schema": "^2.4",
+        "psr/clock": "^1.0",
+        "symfony/dotenv": "^6.4 || ^7.0 || ^8.0",
+        "symfony/yaml": "^6.4 || ^7.0 || ^8.0"
+    },
+    "suggest": {
+        "ext-pdo_pgsql": "for the Postgres resource",
+        "ext-redis": "for the Redis resource, or predis/predis",
+        "php-amqplib/php-amqplib": "for the bus stand-in"
+    },
+    "autoload": {
+        "psr-4": {
+            "Specrig\\": "src/"
+        }
+    },
+    "bin": [
+        "bin/specrig"
+    ]
+}

@@ -1,0 +1,14 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+$autoload = $GLOBALS['_composer_autoload_path'] ?? null;
+foreach ([$autoload, __DIR__ . '/../../../autoload.php', __DIR__ . '/../../../vendor/autoload.php'] as $file) {
+    if ($file !== null && is_file($file)) {
+        require $file;
+        break;
+    }
+}
+
+exit(Specrig\Tool\Cli::run(array_slice($argv, 1), (string) getcwd()));
