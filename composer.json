@@ -3,6 +3,10 @@
     "description": "The core of specrig for PHP: the harness, the stand-ins, the contract check, the records, the Behat binding and the specrig command",
     "type": "library",
     "license": "MIT",
+    "support": {
+        "source": "https://github.com/specrig/specrig-php",
+        "issues": "https://github.com/specrig/specrig-php/issues"
+    },
     "require": {
         "php": "^8.2",
         "ext-curl": "*",
