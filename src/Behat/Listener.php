@@ -11,6 +11,7 @@ use Behat\Behat\EventDispatcher\Event\ScenarioTested;
 use Behat\Behat\EventDispatcher\Event\StepTested;
 use Behat\Gherkin\Node\ExampleNode;
 use Behat\Testwork\EventDispatcher\Event\ExerciseCompleted;
+use Specrig\Features;
 use Specrig\Rig;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
@@ -42,7 +43,11 @@ final class Listener implements EventSubscriberInterface
     public function ended(AfterScenarioTested $event): void
     {
         $scenario = $event->getScenario();
-        $title = $scenario instanceof ExampleNode ? $scenario->getOutlineTitle() : $scenario->getTitle();
+        $title = $scenario->getTitle();
+        if ($scenario instanceof ExampleNode) {
+            $row = $scenario->getTokens();
+            $title = Features::filled((string) $scenario->getOutlineTitle(), array_keys($row), array_values($row));
+        }
         $this->cases->ended((string) $event->getFeature()->getFile(), strtok((string) $title, "\n") ?: '');
     }
 

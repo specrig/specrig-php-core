@@ -44,6 +44,10 @@ final class Features
         $feature = '';
         $featureIgnored = false;
         $tags = [];
+        $outline = null;
+        $at = 0;
+        $rowsIgnored = null;
+        $header = null;
         foreach ($lines as $raw) {
             $line = trim($raw);
             if (str_starts_with($line, '@')) {
@@ -57,15 +61,60 @@ final class Features
                 continue;
             }
             if (($title = self::scenario($line)) !== null) {
-                $found[] = new Scenario($file, $feature, $title, $featureIgnored || in_array('@ignore', $tags, true));
+                $at = count($found);
+                $found[] = $outline = new Scenario($file, $feature, $title, $featureIgnored || in_array('@ignore', $tags, true));
                 $tags = [];
+                $rowsIgnored = null;
+                continue;
+            }
+            if ($outline !== null && (str_starts_with($line, 'Examples:') || str_starts_with($line, 'Scenarios:'))) {
+                // An outline runs as its rows, never under its own title.
+                unset($found[$at]);
+                $rowsIgnored = $outline->ignored || in_array('@ignore', $tags, true);
+                $header = null;
+                $tags = [];
+                continue;
+            }
+            if ($rowsIgnored !== null && str_starts_with($line, '|')) {
+                $cells = self::cells($line);
+                if ($header === null) {
+                    $header = $cells;
+                } else {
+                    $found[] = new Scenario($file, $feature, self::filled($outline->title, $header, $cells), $rowsIgnored);
+                }
                 continue;
             }
             if ($line !== '' && !str_starts_with($line, '#')) {
                 $tags = [];
+                // Past its header a table ends at the first other line, such as a Rule's Background.
+                if ($header !== null) {
+                    $rowsIgnored = null;
+                }
             }
         }
-        return $found;
+        return array_values($found);
+    }
+
+    /**
+     * The title an outline runs under for one row of its examples, filled as gherkin fills it.
+     *
+     * @param list<string> $columns
+     * @param list<string> $values
+     */
+    public static function filled(string $title, array $columns, array $values): string
+    {
+        for ($i = 0; $i < min(count($columns), count($values)); $i++) {
+            $title = str_replace("<{$columns[$i]}>", $values[$i], $title);
+        }
+        return $title;
+    }
+
+    /** @return list<string> */
+    private static function cells(string $line): array
+    {
+        preg_match_all('/(?:[^|\\\\]|\\\\.)*\|/', substr($line, 1), $cells);
+        // gherkin's escapes in a table cell.
+        return array_map(fn (string $c) => trim(strtr(substr($c, 0, -1), ['\\|' => '|', '\\\\' => '\\', '\\n' => "\n"])), $cells[0]);
     }
 
     private static function scenario(string $line): ?string
