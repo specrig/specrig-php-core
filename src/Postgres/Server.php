@@ -11,12 +11,20 @@ final class Server
 {
     private const MARK = 'specrig ';
 
+    private const BASELINE = 'specrig_baseline';
+
     private ?\PDO $connection = null;
 
     private \Throwable|false|null $migration = null;
 
     /** @var list<string> */
     private array $tables = [];
+
+    /** @var list<string> */
+    private array $restores = [];
+
+    /** @var list<string> */
+    private array $sequences = [];
 
     private function __construct(private readonly string $maintenance, private readonly string $database, public readonly string $address)
     {
@@ -104,7 +112,10 @@ final class Server
             try {
                 $migrate();
                 $this->migration = false;
-                $this->tables = $this->discover($keep);
+                foreach ($this->discover($keep) as [$schema, $table]) {
+                    $this->remember($schema, $table);
+                }
+                $this->reset();
             } catch (\Throwable $e) {
                 $this->migration = $e;
             }
@@ -116,8 +127,30 @@ final class Server
 
     public function reset(): void
     {
-        if ($this->tables !== []) {
-            $this->connection()->exec('TRUNCATE TABLE ' . implode(', ', $this->tables) . ' RESTART IDENTITY CASCADE');
+        if ($this->tables === []) {
+            return;
+        }
+        $connection = $this->connection();
+        $connection->beginTransaction();
+        try {
+            if ($this->restores !== []) {
+                try {
+                    $connection->exec('SET LOCAL session_replication_role = replica');
+                } catch (\PDOException $e) {
+                    throw new \RuntimeException("putting back the rows the migrations left needs a superuser: {$e->getMessage()}", 0, $e);
+                }
+            }
+            $connection->exec('TRUNCATE TABLE ' . implode(', ', $this->tables) . ' RESTART IDENTITY CASCADE');
+            foreach ($this->restores as $restore) {
+                $connection->exec($restore);
+            }
+            if ($this->sequences !== []) {
+                $connection->exec('SELECT setval(name::regclass, last_value, is_called) FROM (VALUES ' . implode(', ', $this->sequences) . ') AS kept (name, last_value, is_called)');
+            }
+            $connection->commit();
+        } catch (\Throwable $e) {
+            $connection->rollBack();
+            throw $e;
         }
     }
 
@@ -129,7 +162,7 @@ final class Server
 
     /**
      * @param list<string> $keep
-     * @return list<string>
+     * @return list<array{string, string}>
      */
     private function discover(array $keep): array
     {
@@ -137,10 +170,41 @@ final class Server
         $found = $this->connection()->query("SELECT schemaname, tablename FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema') ORDER BY 1, 2");
         foreach ($found->fetchAll(\PDO::FETCH_NUM) as [$schema, $table]) {
             if (!in_array($table, $keep, true)) {
-                $tables[] = self::quoted($schema) . '.' . self::quoted($table);
+                $tables[] = [$schema, $table];
             }
         }
         return $tables;
+    }
+
+    private function remember(string $schema, string $table): void
+    {
+        $connection = $this->connection();
+        $name = self::quoted($schema) . '.' . self::quoted($table);
+        $this->tables[] = $name;
+        $found = $connection->prepare(
+            'SELECT column_name, is_generated, pg_get_serial_sequence(?, column_name) FROM information_schema.columns
+             WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position',
+        );
+        $found->execute([$name, $schema, $table]);
+        $insertable = [];
+        foreach ($found->fetchAll(\PDO::FETCH_NUM) as [$column, $generated, $sequence]) {
+            if ($generated === 'NEVER') {
+                $insertable[] = self::quoted($column);
+            }
+            if ($sequence !== null) {
+                [$last, $called] = $connection->query("SELECT last_value, is_called FROM {$sequence}")->fetch(\PDO::FETCH_NUM);
+                $this->sequences[] = '(' . $connection->quote($sequence) . ", {$last}, " . ($called ? 'true' : 'false') . ')';
+            }
+        }
+        $filled = $connection->prepare("SELECT NOT relispartition AND EXISTS (SELECT 1 FROM {$name}) FROM pg_class WHERE oid = ?::regclass");
+        $filled->execute([$name]);
+        if ($filled->fetchColumn()) {
+            $columns = implode(', ', $insertable);
+            $copy = self::BASELINE . '.t' . count($this->restores);
+            $connection->exec('CREATE SCHEMA IF NOT EXISTS ' . self::BASELINE);
+            $connection->exec("CREATE TABLE {$copy} AS SELECT {$columns} FROM {$name}");
+            $this->restores[] = "INSERT INTO {$name} ({$columns}) OVERRIDING SYSTEM VALUE SELECT {$columns} FROM {$copy}";
+        }
     }
 
     private function connection(): \PDO
