@@ -173,7 +173,10 @@ final class Templates
           every call below, and the exact path wins;
         - `$harness-><neighbour>->replyTo($method, $path, $query, $status, $body)` — the same,
           for a request whose query has these values;
-        - `$harness-><neighbour>->timeOut($method, $path)` — the neighbour not answering in time;
+        - `$harness-><neighbour>->replyWith($method, $path, $answer)` — the answer worked out
+          from each request, `[$status, $body]`;
+        - `$harness-><neighbour>->timeOut($method, $path)` — the neighbour not answering in time,
+          until `$harness-><neighbour>->heal()`;
         - `$harness-><neighbour>->requests($method, $path)` — what reached the neighbour, for a
           `Then`.
 

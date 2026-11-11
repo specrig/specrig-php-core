@@ -19,7 +19,7 @@ final class Backend implements StandIn
 
     private ?Contract $checked = null;
 
-    /** @var array<string, list<array{array<string, list<string>>, int, mixed, array<string, string>}>> */
+    /** @var array<string, list<array{array<string, list<string>>, \Closure(Received): array{int, mixed}, array<string, string>}>> */
     private array $replies = [];
 
     /** @var array<string, list<array<string, list<string>>>> */
@@ -100,11 +100,33 @@ final class Backend implements StandIn
      */
     public function replyTo(string $method, string $path, array $query, int $status, mixed $body = null, array $headers = []): void
     {
+        $declared = Json::of($body);
+        $this->declare($method, $path, self::listed($query), fn () => [$status, $declared], $headers);
+    }
+
+    /**
+     * @param \Closure(Received): array{int, mixed} $answer
+     * @param array<string, string> $headers
+     */
+    public function replyWith(string $method, string $path, \Closure $answer, array $headers = []): void
+    {
+        $this->declare($method, $path, [], function (Received $received) use ($answer): array {
+            [$status, $body] = $answer($received);
+            return [$status, Json::of($body)];
+        }, $headers);
+    }
+
+    /**
+     * @param array<string, list<string>> $query
+     * @param \Closure(Received): array{int, mixed} $answer
+     * @param array<string, string> $headers
+     */
+    private function declare(string $method, string $path, array $query, \Closure $answer, array $headers): void
+    {
         $key = "{$method} {$path}";
-        $query = self::listed($query);
         $this->replies[$key] = [
             ...array_values(array_filter($this->replies[$key] ?? [], fn (array $r) => !self::same($r[0], $query))),
-            [$query, $status, Json::of($body), $headers],
+            [$query, $answer, $headers],
         ];
     }
 
@@ -114,6 +136,11 @@ final class Backend implements StandIn
         $key = "{$method} {$path}";
         $query = self::listed($query);
         $this->timeouts[$key] = [...array_values(array_filter($this->timeouts[$key] ?? [], fn (array $q) => !self::same($q, $query))), $query];
+    }
+
+    public function heal(): void
+    {
+        $this->timeouts = [];
     }
 
     /** @return list<Received> */
@@ -143,26 +170,28 @@ final class Backend implements StandIn
         $body = Json::decode($request->body);
         $call = $this->trace->begin();
         try {
-            $this->received[] = new Received($method, $path, $query, $body);
+            $received = new Received($method, $path, $query, $body);
+            $this->received[] = $received;
             array_push($this->violations, ...$this->checked?->request($method, $path, $body) ?? []);
             if (self::pick(self::declared($this->timeouts, $method, $path), $query, fn (array $q) => $q) !== null) {
                 throw new Unreachable("{$this->name} did not answer {$key} in time", timedOut: true);
             }
-            return $this->fulfil($method, $path, $key . $request->search(), $query);
+            return $this->fulfil($received, $key . $request->search());
         } finally {
             $this->trace->end($call, 'out', 'http', $this->checked?->name($method, $path) ?? $key, $body);
         }
     }
 
-    /** @param array<string, list<string>> $query */
-    private function fulfil(string $method, string $path, string $asked, array $query): Response
+    private function fulfil(Received $received, string $asked): Response
     {
-        $reply = self::pick(self::declared($this->replies, $method, $path), $query, fn (array $r) => $r[0]);
+        [$method, $path] = [$received->method, $received->path];
+        $reply = self::pick(self::declared($this->replies, $method, $path), $received->query, fn (array $r) => $r[0]);
         if ($reply === null) {
             $this->unanswered[] = $asked;
             return self::respond(501, (object) ['code' => 'unanswered', 'message' => "{$method} {$path}"]);
         }
-        [, $status, $body, $headers] = $reply;
+        [, $answer, $headers] = $reply;
+        [$status, $body] = $answer($received);
         array_push($this->violations, ...$this->checked?->response($method, $path, $status, $body ?? new \stdClass()) ?? []);
         return self::respond($status, $status === 204 ? null : $body ?? new \stdClass(), $headers);
     }
