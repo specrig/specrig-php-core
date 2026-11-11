@@ -20,7 +20,9 @@
         "symfony/yaml": "^6.4 || ^7.0 || ^8.0"
     },
     "suggest": {
+        "ext-pdo_mysql": "for the Mysql resource",
         "ext-pdo_pgsql": "for the Postgres resource",
+        "ext-pdo_sqlite": "for the Sqlite resource",
         "ext-redis": "for the Redis resource, or predis/predis",
         "php-amqplib/php-amqplib": "for the bus stand-in"
     },

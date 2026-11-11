@@ -13,10 +13,18 @@ final class Docker
         $this->socket = $socket ?? self::socket();
     }
 
+    private const PUBLISHED = 'specrig.published';
+
     // Inside the suite's image the published ports are on the host, not on loopback.
     public static function host(): string
     {
         return Environment::get('TESTCONTAINERS_HOST_OVERRIDE') ?: '127.0.0.1';
+    }
+
+    // The servers take anyone in without a password; a suite in a container needs every interface.
+    public static function published(): string
+    {
+        return self::host() === '127.0.0.1' ? 'loopback' : 'everywhere';
     }
 
     /**
@@ -25,6 +33,7 @@ final class Docker
      */
     public function containers(array $labels): array
     {
+        $labels += [self::PUBLISHED => self::published()];
         $filters = json_encode(['label' => array_map(fn ($k, $v) => "{$k}={$v}", array_keys($labels), $labels)]);
         return $this->call('GET', '/containers/json?all=1&filters=' . rawurlencode((string) $filters));
     }
@@ -36,12 +45,13 @@ final class Docker
      */
     public function run(string $image, int $port, array $env, array $labels, ?string $name = null, array $command = []): string
     {
+        $interface = self::published() === 'loopback' ? '127.0.0.1' : '';
         $spec = [
             'Image' => $image,
             'Env' => $env,
-            'Labels' => (object) $labels,
+            'Labels' => (object) ($labels + [self::PUBLISHED => self::published()]),
             'ExposedPorts' => (object) ["{$port}/tcp" => new \stdClass()],
-            'HostConfig' => ['PortBindings' => ["{$port}/tcp" => [['HostPort' => '']]]],
+            'HostConfig' => ['PortBindings' => ["{$port}/tcp" => [['HostIp' => $interface, 'HostPort' => '']]]],
         ] + ($command === [] ? [] : ['Cmd' => $command]);
         $path = '/containers/create' . ($name === null ? '' : '?name=' . rawurlencode($name));
         try {

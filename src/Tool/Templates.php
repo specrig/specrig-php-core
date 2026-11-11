@@ -187,9 +187,9 @@ final class Templates
         database, the cache or the bus away until the next case. A write that fails halfway is
         not an outage: `$harness-><database>->refuse($table)` makes one table refuse writes,
         `refuseAfter($table, $rows)` lets that many rows through first, and reads keep working,
-        so a `Then` can check what the failed write left; `refuseCommit($table)` fails only the
-        commit. `heal()` is the database coming back: it ends the fault and every refusal and
-        keeps the rows.
+        so a `Then` can check what the failed write left; on Postgres, `refuseCommit($table)`
+        fails only the commit. `heal()` is the database coming back: it ends the fault and every
+        refusal and keeps the rows.
 
         **What may be stood in for is given, not chosen.** `tests/internal/` is read-only. A
         case that needs another neighbour, or an answer the stand-in cannot give, is a stop:

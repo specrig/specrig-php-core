@@ -21,6 +21,12 @@ final class Init
         'pcre', 'pdo', 'pdo_sqlite', 'phar', 'posix', 'random', 'readline', 'reflection', 'session', 'simplexml', 'sodium', 'spl', 'sqlite3',
         'standard', 'tokenizer', 'xml', 'xmlreader', 'xmlwriter', 'zlib'];
 
+    private const DATABASES = [
+        'pgsql' => ['scheme' => 'postgres', 'kind' => 'Specrig\Postgres', 'extension' => 'pdo_pgsql'],
+        'mysql' => ['scheme' => 'mysql', 'kind' => 'Specrig\Mysql', 'extension' => 'pdo_mysql'],
+        'sqlite' => ['scheme' => 'sqlite', 'kind' => 'Specrig\Sqlite', 'extension' => 'pdo_sqlite'],
+    ];
+
     /**
      * @param list<string> $args
      * @return array{int, string}
@@ -77,8 +83,10 @@ final class Init
         $constants = [];
         if ($framework === 'laravel') {
             $constants['APP_KEY'] = 'base64:' . base64_encode(random_bytes(32));
-            if (array_filter($resources, fn (array $r) => $r['kind'] === 'Specrig\Postgres') !== []) {
-                $constants['DB_CONNECTION'] = 'pgsql';
+            foreach (self::DATABASES as $connection => ['kind' => $kind]) {
+                if (in_array($kind, array_column($resources, 'kind'), true)) {
+                    $constants['DB_CONNECTION'] = $connection;
+                }
             }
         } else {
             $shipped = self::shipped($service);
@@ -113,8 +121,13 @@ final class Init
         $env = self::dotenv($service, $framework === 'laravel' ? ['.env.example'] : ['.env', '.env.prod']);
         $required = array_keys($service->composer['require'] ?? []);
         $resources = [];
-        if ($framework === 'laravel' && ($env['DB_CONNECTION'] ?? null) === 'pgsql' || $framework === 'symfony' && str_starts_with((string) ($env['DATABASE_URL'] ?? ''), 'postgres')) {
-            $resources[] = ['kind' => 'Specrig\Postgres', 'property' => 'database', 'setting' => $framework === 'laravel' ? 'DB_URL' : 'DATABASE_URL'];
+        $url = (string) ($env['DATABASE_URL'] ?? '');
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+        $mariadb = stripos((string) ($query['serverVersion'] ?? ''), 'mariadb') !== false;
+        foreach (self::DATABASES as $connection => ['scheme' => $scheme, 'kind' => $kind]) {
+            if ($framework === 'laravel' && ($env['DB_CONNECTION'] ?? null) === $connection || $framework === 'symfony' && str_starts_with($url, $scheme) && !$mariadb) {
+                $resources[] = ['kind' => $kind, 'property' => 'database', 'setting' => $framework === 'laravel' ? 'DB_URL' : 'DATABASE_URL'];
+            }
         }
         $redis = $framework === 'laravel'
             ? array_intersect(['CACHE_STORE', 'QUEUE_CONNECTION', 'SESSION_DRIVER'], array_keys(array_filter($env, fn ($v) => $v === 'redis'))) !== []
@@ -184,8 +197,10 @@ final class Init
                 }
             }
         }
-        if (array_filter($resources, fn (array $r) => $r['kind'] === 'Specrig\Postgres') !== []) {
-            $wanted['pdo_pgsql'] = true;
+        foreach (self::DATABASES as ['kind' => $kind, 'extension' => $extension]) {
+            if (in_array($kind, array_column($resources, 'kind'), true)) {
+                $wanted[$extension] = true;
+            }
         }
         $extensions = array_values(array_diff(array_keys($wanted), self::BUILT));
         sort($extensions);
