@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace Specrig;
 
+use Behat\Gherkin\Dialect\CucumberDialectProvider;
+use Behat\Gherkin\Dialect\GherkinDialect;
+use Behat\Gherkin\Exception\NoSuchLanguageException;
+
 final class Features
 {
-    private const SCENARIO = ['Scenario Outline:', 'Scenario Template:', 'Scenario:', 'Example:'];
+    private static ?CucumberDialectProvider $dialects = null;
 
     /** @var list<Scenario> */
     private array $cases = [];
@@ -40,6 +44,8 @@ final class Features
      */
     private static function parse(string $file, array $lines): array
     {
+        $dialect = self::dialect($lines);
+        $scenarios = [...$dialect->getScenarioKeywords(), ...$dialect->getScenarioOutlineKeywords()];
         $found = [];
         $feature = '';
         $featureIgnored = false;
@@ -54,20 +60,20 @@ final class Features
                 array_push($tags, ...preg_split('/\s+/', $line, -1, PREG_SPLIT_NO_EMPTY));
                 continue;
             }
-            if (str_starts_with($line, 'Feature:')) {
-                $feature = trim(substr($line, strlen('Feature:')));
+            if (($title = self::title($line, $dialect->getFeatureKeywords())) !== null) {
+                $feature = $title;
                 $featureIgnored = in_array('@ignore', $tags, true);
                 $tags = [];
                 continue;
             }
-            if (($title = self::scenario($line)) !== null) {
+            if (($title = self::title($line, $scenarios)) !== null) {
                 $at = count($found);
                 $found[] = $outline = new Scenario($file, $feature, $title, $featureIgnored || in_array('@ignore', $tags, true));
                 $tags = [];
                 $rowsIgnored = null;
                 continue;
             }
-            if ($outline !== null && (str_starts_with($line, 'Examples:') || str_starts_with($line, 'Scenarios:'))) {
+            if ($outline !== null && self::title($line, $dialect->getExamplesKeywords()) !== null) {
                 // An outline runs as its rows, never under its own title.
                 unset($found[$at]);
                 $rowsIgnored = $outline->ignored || in_array('@ignore', $tags, true);
@@ -117,13 +123,34 @@ final class Features
         return array_map(fn (string $c) => trim(strtr(substr($c, 0, -1), ['\\|' => '|', '\\\\' => '\\', '\\n' => "\n"])), $cells[0]);
     }
 
-    private static function scenario(string $line): ?string
+    /** @param list<string> $keywords */
+    private static function title(string $line, array $keywords): ?string
     {
-        foreach (self::SCENARIO as $keyword) {
-            if (str_starts_with($line, $keyword)) {
-                return trim(substr($line, strlen($keyword)));
+        foreach ($keywords as $keyword) {
+            if (str_starts_with($line, "{$keyword}:")) {
+                return trim(substr($line, strlen($keyword) + 1));
             }
         }
         return null;
+    }
+
+    /** @param list<string> $lines */
+    private static function dialect(array $lines): GherkinDialect
+    {
+        $dialects = self::$dialects ??= new CucumberDialectProvider();
+        foreach ($lines as $raw) {
+            $line = trim($raw);
+            if (preg_match('/^#\s*language\s*:\s*([\w-]+)$/u', $line, $directive) === 1) {
+                try {
+                    return $dialects->getDialect($directive[1]);
+                } catch (NoSuchLanguageException) {
+                    break;
+                }
+            }
+            if ($line !== '' && !str_starts_with($line, '#') && !str_starts_with($line, '@')) {
+                break;
+            }
+        }
+        return $dialects->getDefaultDialect();
     }
 }

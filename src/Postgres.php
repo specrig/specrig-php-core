@@ -19,6 +19,9 @@ final class Postgres implements Resource
 
     private ?\Throwable $error = null;
 
+    /** @var list<\Closure(Server): void> */
+    private array $waiting = [];
+
     /** @param list<string> $keep */
     public function __construct(
         private readonly string $setting,
@@ -52,6 +55,10 @@ final class Postgres implements Resource
         $this->server()->reset();
         $this->rig = $rig;
         $this->apply();
+        foreach ($this->waiting as $refusal) {
+            $refusal($this->server());
+        }
+        $this->waiting = [];
     }
 
     // A fault a step sets before the boot waits for it: the migration goes through.
@@ -67,6 +74,33 @@ final class Postgres implements Resource
         }
     }
 
+    public function refuse(string $table, Write ...$writes): void
+    {
+        $this->refused(fn (Server $server) => $server->refuse($table, 0, $writes));
+    }
+
+    public function refuseAfter(string $table, int $rows, Write ...$writes): void
+    {
+        $this->refused(fn (Server $server) => $server->refuse($table, $rows, $writes));
+    }
+
+    public function refuseCommit(string $table, Write ...$writes): void
+    {
+        $this->refused(fn (Server $server) => $server->refuse($table, 0, $writes, deferred: true));
+    }
+
+    public function heal(): void
+    {
+        $rig = $this->rig;
+        $this->refusing = false;
+        $this->error = null;
+        $this->waiting = [];
+        if ($rig?->booted()) {
+            $rig->databases()->heal($this->server()->address, $this->server()->refusing());
+            $this->server()->lift();
+        }
+    }
+
     public function failures(): array
     {
         return [];
@@ -77,6 +111,17 @@ final class Postgres implements Resource
         $this->rig = null;
         $this->refusing = false;
         $this->error = null;
+        $this->waiting = [];
+    }
+
+    /** @param \Closure(Server): void $refusal */
+    private function refused(\Closure $refusal): void
+    {
+        if ($this->rig?->booted()) {
+            $refusal($this->server());
+        } else {
+            $this->waiting[] = $refusal;
+        }
     }
 
     private function apply(): void

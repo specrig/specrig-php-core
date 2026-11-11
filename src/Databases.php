@@ -14,4 +14,6 @@ interface Databases
     public function refuse(string $address, string $refusing): void;
 
     public function fail(string $address, \Throwable $error): void;
+
+    public function heal(string $address, string $refusing): void;
 }

@@ -19,7 +19,7 @@ final class Backend implements StandIn
 
     private ?Contract $checked = null;
 
-    /** @var array<string, list<array{array<string, list<string>>, int, mixed}>> */
+    /** @var array<string, list<array{array<string, list<string>>, int, mixed, array<string, string>}>> */
     private array $replies = [];
 
     /** @var array<string, list<array<string, list<string>>>> */
@@ -88,19 +88,23 @@ final class Backend implements StandIn
         return $failures;
     }
 
-    public function reply(string $method, string $path, int $status, mixed $body = null): void
+    /** @param array<string, string> $headers */
+    public function reply(string $method, string $path, int $status, mixed $body = null, array $headers = []): void
     {
-        $this->replyTo($method, $path, [], $status, $body);
+        $this->replyTo($method, $path, [], $status, $body, $headers);
     }
 
-    /** @param array<string, string|list<string>> $query */
-    public function replyTo(string $method, string $path, array $query, int $status, mixed $body = null): void
+    /**
+     * @param array<string, string|list<string>> $query
+     * @param array<string, string> $headers
+     */
+    public function replyTo(string $method, string $path, array $query, int $status, mixed $body = null, array $headers = []): void
     {
         $key = "{$method} {$path}";
         $query = self::listed($query);
         $this->replies[$key] = [
             ...array_values(array_filter($this->replies[$key] ?? [], fn (array $r) => !self::same($r[0], $query))),
-            [$query, $status, Json::of($body)],
+            [$query, $status, Json::of($body), $headers],
         ];
     }
 
@@ -115,7 +119,7 @@ final class Backend implements StandIn
     /** @return list<Received> */
     public function requests(string $method, string $path): array
     {
-        return array_values(array_filter($this->received, fn (Received $r) => $r->method === $method && $r->path === $path));
+        return array_values(array_filter($this->received, fn (Received $r) => $r->method === $method && self::takes($path, $r->path)));
     }
 
     /** @return list<string> */
@@ -141,7 +145,7 @@ final class Backend implements StandIn
         try {
             $this->received[] = new Received($method, $path, $query, $body);
             array_push($this->violations, ...$this->checked?->request($method, $path, $body) ?? []);
-            if (self::pick($this->timeouts[$key] ?? [], $query, fn (array $q) => $q) !== null) {
+            if (self::pick(self::declared($this->timeouts, $method, $path), $query, fn (array $q) => $q) !== null) {
                 throw new Unreachable("{$this->name} did not answer {$key} in time", timedOut: true);
             }
             return $this->fulfil($method, $path, $key . $request->search(), $query);
@@ -153,21 +157,57 @@ final class Backend implements StandIn
     /** @param array<string, list<string>> $query */
     private function fulfil(string $method, string $path, string $asked, array $query): Response
     {
-        $reply = self::pick($this->replies["{$method} {$path}"] ?? [], $query, fn (array $r) => $r[0]);
+        $reply = self::pick(self::declared($this->replies, $method, $path), $query, fn (array $r) => $r[0]);
         if ($reply === null) {
             $this->unanswered[] = $asked;
             return self::respond(501, (object) ['code' => 'unanswered', 'message' => "{$method} {$path}"]);
         }
-        [, $status, $body] = $reply;
+        [, $status, $body, $headers] = $reply;
         array_push($this->violations, ...$this->checked?->response($method, $path, $status, $body ?? new \stdClass()) ?? []);
-        return self::respond($status, $status === 204 ? null : $body ?? new \stdClass());
+        return self::respond($status, $status === 204 ? null : $body ?? new \stdClass(), $headers);
     }
 
-    private static function respond(int $status, mixed $body): Response
+    /** @param array<string, string> $headers */
+    private static function respond(int $status, mixed $body, array $headers = []): Response
     {
-        return $body === null
-            ? new Response($status)
-            : new Response($status, ['Content-Type' => 'application/json'], Json::encode($body));
+        if ($body === null) {
+            return new Response($status, $headers);
+        }
+        $typed = array_filter(array_keys($headers), fn ($name) => strcasecmp((string) $name, 'Content-Type') === 0) !== [];
+        return new Response($status, ($typed ? [] : ['Content-Type' => 'application/json']) + $headers, Json::encode($body));
+    }
+
+    /**
+     * @template T
+     * @param array<string, list<T>> $declared
+     * @return list<T>
+     */
+    private static function declared(array $declared, string $method, string $path): array
+    {
+        if (isset($declared["{$method} {$path}"])) {
+            return $declared["{$method} {$path}"];
+        }
+        foreach ($declared as $key => $candidates) {
+            if (str_starts_with($key, "{$method} ") && self::takes(substr($key, strlen($method) + 1), $path)) {
+                return $candidates;
+            }
+        }
+        return [];
+    }
+
+    private static function takes(string $template, string $path): bool
+    {
+        $wanted = explode('/', $path);
+        $segments = explode('/', $template);
+        if (count($segments) !== count($wanted)) {
+            return false;
+        }
+        foreach ($segments as $i => $segment) {
+            if (!str_starts_with($segment, '{') && $segment !== $wanted[$i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

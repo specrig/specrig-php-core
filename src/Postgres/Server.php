@@ -6,12 +6,39 @@ namespace Specrig\Postgres;
 
 use Specrig\Docker;
 use Specrig\Rig;
+use Specrig\Write;
 
 final class Server
 {
     private const MARK = 'specrig ';
 
     private const BASELINE = 'specrig_baseline';
+
+    // A schema of its own, so that neither discovery nor the baseline copy lists it.
+    private const REFUSAL = <<<'SQL'
+        create schema if not exists specrig_refusal;
+        create table if not exists specrig_refusal.quota (
+            relation oid,
+            name text,
+            remaining int not null,
+            primary key (relation, name)
+        );
+        create or replace function specrig_refusal.refuse() returns trigger language plpgsql as $$
+        declare
+            rest int;
+        begin
+            update specrig_refusal.quota set remaining = remaining - 1
+            where relation = tg_relid and name = tg_name
+            returning remaining into rest;
+            if rest < 0 then
+                raise exception 'specrig: % on % is refused', lower(tg_op), tg_table_name;
+            end if;
+            if tg_op = 'DELETE' then
+                return old;
+            end if;
+            return new;
+        end $$;
+        SQL;
 
     private ?\PDO $connection = null;
 
@@ -127,6 +154,7 @@ final class Server
 
     public function reset(): void
     {
+        $this->lift();
         if ($this->tables === []) {
             return;
         }
@@ -152,6 +180,37 @@ final class Server
             $connection->rollBack();
             throw $e;
         }
+    }
+
+    /** @param list<Write> $writes */
+    public function refuse(string $table, int $rows, array $writes, bool $deferred = false): void
+    {
+        $events = array_map(fn (Write $write) => $write->value, array_filter(Write::cases(), fn (Write $write) => $writes === [] || in_array($write, $writes, true)));
+        $name = 'specrig_refuse_' . ($deferred ? 'commit_' : '') . implode('_', $events);
+        $on = implode('.', array_map(self::quoted(...), explode('.', $table, 2)));
+        $trigger = $deferred
+            ? "create constraint trigger {$name} after " . implode(' or ', $events) . " on {$on} deferrable initially deferred for each row"
+            : "create trigger {$name} before " . implode(' or ', $events) . " on {$on} for each row";
+        $connection = $this->connection();
+        $connection->beginTransaction();
+        try {
+            $connection->exec(self::REFUSAL);
+            $connection->prepare(
+                'INSERT INTO specrig_refusal.quota (relation, name, remaining) VALUES (?::regclass, ?, ?)
+                 ON CONFLICT (relation, name) DO UPDATE SET remaining = excluded.remaining',
+            )->execute([$on, $name, $rows]);
+            $connection->exec("DROP TRIGGER IF EXISTS {$name} ON {$on}");
+            $connection->exec("{$trigger} execute function specrig_refusal.refuse()");
+            $connection->commit();
+        } catch (\PDOException $e) {
+            $connection->rollBack();
+            throw new \RuntimeException("cannot refuse writes to {$table}: {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    public function lift(): void
+    {
+        $this->connection()->exec('DROP SCHEMA IF EXISTS specrig_refusal CASCADE');
     }
 
     // Nothing listens on port 1, so whatever connects there is refused.

@@ -6,14 +6,16 @@ namespace Specrig;
 
 final class Redis implements Resource
 {
-    /** @var array<string, string> */
+    /** @var array<string, array{string, Gate}> */
     private static array $servers = [];
 
     private ?string $server = null;
 
+    private ?Gate $gate = null;
+
     private bool $refusing = false;
 
-    private bool $provisioned = false;
+    private bool $booted = false;
 
     public function __construct(
         private readonly string $setting,
@@ -31,32 +33,33 @@ final class Redis implements Resource
     {
     }
 
-    // The service's clients are built from the address at the boot, so a refusal is
-    // an address where nothing listens, and a step sets it before the boot.
+    // A fault a step sets before the boot waits for it: the service boots with its Redis up.
     public function failWith(): void
     {
-        if ($this->provisioned) {
-            throw new \LogicException('redis is answered already: make it refuse in a Given, before a step reaches the service');
-        }
         $this->refusing = true;
+        if ($this->booted) {
+            $this->gate?->refuse();
+        }
     }
 
+    // The service gets the address of a gate, so that a fault cuts the clients it already built.
     public function provision(string $service): string
     {
         $name = preg_replace('/[^A-Z0-9]/', '_', strtoupper($service));
         $given = $this->address ?? Environment::get("{$name}_TEST_REDIS");
-        $this->server = self::$servers[$given ?? $this->image] ??= $given ?? self::container($name, $this->image);
-        $this->provisioned = true;
-        if ($this->refusing) {
-            $parts = parse_url($this->server);
-            return "redis://127.0.0.1:1" . ($parts['path'] ?? '');
-        }
-        return $this->server;
+        [$this->server, $this->gate] = self::$servers[$given ?? $this->image] ??= self::start($name, $given, $this->image);
+        $parts = parse_url($this->server);
+        $credentials = isset($parts['user']) ? $parts['user'] . (isset($parts['pass']) ? ":{$parts['pass']}" : '') . '@' : '';
+        return ($parts['scheme'] ?? 'redis') . "://{$credentials}127.0.0.1:{$this->gate->port}" . ($parts['path'] ?? '') . (isset($parts['query']) ? "?{$parts['query']}" : '');
     }
 
     public function ready(Rig $rig): void
     {
         $this->command('FLUSHDB');
+        $this->booted = true;
+        if ($this->refusing) {
+            $this->gate?->refuse();
+        }
     }
 
     public function failures(): array
@@ -66,6 +69,17 @@ final class Redis implements Resource
 
     public function release(): void
     {
+        $this->gate?->reopen();
+        $this->refusing = false;
+        $this->booted = false;
+    }
+
+    /** @return array{string, Gate} */
+    private static function start(string $service, ?string $given, string $image): array
+    {
+        $address = $given ?? self::container($service, $image);
+        $parts = parse_url($address);
+        return [$address, Gate::start(($parts['host'] ?? '127.0.0.1') . ':' . ($parts['port'] ?? 6379))];
     }
 
     // Starting redis costs less than a second, so the container is the run's own rather than kept.

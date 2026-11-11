@@ -168,8 +168,9 @@ final class Templates
         `tests/steps/` takes it in its constructor, with a property for each neighbour
         `Harness.php` names:
 
-        - `$harness-><neighbour>->reply($method, $path, $status, $body)` — what the neighbour
-          answers;
+        - `$harness-><neighbour>->reply($method, $path, $status, $body, $headers)` — what the
+          neighbour answers; a segment in braces, `/orders/{id}`, takes any value here and in
+          every call below, and the exact path wins;
         - `$harness-><neighbour>->replyTo($method, $path, $query, $status, $body)` — the same,
           for a request whose query has these values;
         - `$harness-><neighbour>->timeOut($method, $path)` — the neighbour not answering in time;
@@ -178,6 +179,14 @@ final class Templates
 
         A call to a neighbour no step answered fails the case, and so does a request to an
         origin `Harness.php` does not name — it is refused before it leaves.
+
+        **An outage is not a replacement.** `$harness-><resource>->failWith()` takes the
+        database, the cache or the bus away until the next case. A write that fails halfway is
+        not an outage: `$harness-><database>->refuse($table)` makes one table refuse writes,
+        `refuseAfter($table, $rows)` lets that many rows through first, and reads keep working,
+        so a `Then` can check what the failed write left; `refuseCommit($table)` fails only the
+        commit. `heal()` is the database coming back: it ends the fault and every refusal and
+        keeps the rows.
 
         **What may be stood in for is given, not chosen.** `tests/internal/` is read-only. A
         case that needs another neighbour, or an answer the stand-in cannot give, is a stop:
