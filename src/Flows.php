@@ -13,7 +13,7 @@ use Symfony\Component\Yaml\Yaml as Parser;
 
 final class Flows
 {
-    public const FORMAT = 'flows/1';
+    public const FORMAT = 'flows/2';
 
     private const HEADER =
         "# Generated from the component suite by specrig: every whole run rewrites the\n" .
